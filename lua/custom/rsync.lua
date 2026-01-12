@@ -31,8 +31,39 @@ _G.onprem_sync_command = {
   '.git/lfs/',
   '--exclude',
   '.metaflow/',
+  '--exclude',
+  '.vscode/',
   project_root,
   'jcta-workspace-0:/root/workspace/jcta/',
+}
+
+_G.onprem_full_gpu_sync_command = {
+  'rsync',
+  '-av',
+  '--verbose',
+  '--stats',
+  '--progress',
+  '--rsh=' .. rsync_rsh_helper,
+  '--exclude',
+  '__pycache__/',
+  '--exclude',
+  '*.pyc',
+  '--exclude',
+  '*.csv',
+  '--exclude',
+  '*.jpg',
+  '--exclude',
+  '.pytest_cache/',
+  '--exclude',
+  '.neptune/',
+  '--exclude',
+  '.git/lfs/',
+  '--exclude',
+  '.metaflow/',
+  '--exclude',
+  '.vscode/',
+  project_root,
+  'jcta-full-gpu-workspace-0:/root/workspace/jcta-full-gpu/',
 }
 
 -- Command to rsync to EC2
@@ -58,6 +89,8 @@ _G.ec2_sync_command = {
   '.git/lfs/',
   '--exclude',
   '.metaflow/',
+  '--exclude',
+  '.vscode/',
   project_root,
   'aws-ec2-g52xl:/home/ubuntu',
 }
@@ -69,6 +102,11 @@ _G.rsync_command = _G.onprem_sync_command
 vim.api.nvim_create_user_command('Both', function()
   _G.rsync_command = { _G.onprem_sync_command, _G.ec2_sync_command }
   vim.api.nvim_echo({ { 'Rsync destination set to BOTH (onprem + ec2)', 'None' } }, false, {})
+end, {})
+
+vim.api.nvim_create_user_command('AllThree', function()
+  _G.rsync_command = { _G.onprem_sync_command, _G.onprem_full_gpu_sync_command, _G.ec2_sync_command }
+  vim.api.nvim_echo({ { 'Rsync destination set to ALL THREE (onprem + onprem full GPU + ec2)', 'None' } }, false, {})
 end, {})
 
 -- Switch rsync destination to EC2
@@ -83,31 +121,37 @@ vim.api.nvim_create_user_command('Onprem', function()
   vim.api.nvim_echo({ { 'Rsync destination set to Onprem', 'None' } }, false, {})
 end, {})
 
+vim.api.nvim_create_user_command('OnpremFullGpu', function()
+  _G.rsync_command = _G.onprem_full_gpu_sync_command
+  vim.api.nvim_echo({ { 'Rsync destination set to Onprem full GPU', 'None' } }, false, {})
+end, {})
+
 -- Shared runner used by autocmds and manual commands
 local function run_rsync()
-  local sys = vim.system or function(cmd, opts, on_exit)
-    -- Fallback for older Neovim: use jobstart if vim.system is unavailable
-    local job_id = vim.fn.jobstart(cmd, {
-      stdout_buffered = true,
-      stderr_buffered = true,
-      on_stdout = function(_, _)
-        if opts and opts.stdout then
-          opts.stdout()
-        end
-      end,
-      on_stderr = function(_, _)
-        if opts and opts.stderr then
-          opts.stderr()
-        end
-      end,
-      on_exit = function(_, _)
-        if on_exit then
-          on_exit()
-        end
-      end,
-    })
-    return job_id
-  end
+  local sys = vim.system
+    or function(cmd, opts, on_exit)
+      -- Fallback for older Neovim: use jobstart if vim.system is unavailable
+      local job_id = vim.fn.jobstart(cmd, {
+        stdout_buffered = true,
+        stderr_buffered = true,
+        on_stdout = function(_, _)
+          if opts and opts.stdout then
+            opts.stdout()
+          end
+        end,
+        on_stderr = function(_, _)
+          if opts and opts.stderr then
+            opts.stderr()
+          end
+        end,
+        on_exit = function(_, _)
+          if on_exit then
+            on_exit()
+          end
+        end,
+      })
+      return job_id
+    end
 
   local cmds
   if type(_G.rsync_command[1]) == 'string' then
@@ -120,14 +164,18 @@ local function run_rsync()
     local cmd = cmds[index]
     if not cmd then
       vim.schedule(function()
-        vim.api.nvim_echo({ { 'synced successfully', 'None' } }, false, {})
+        vim.api.nvim_echo({ { 'all rsyncs completed', 'None' } }, false, {})
       end)
       return
     end
+    local dest = cmd[#cmd] or 'destination'
     sys(cmd, {
       stdout = function() end,
       stderr = function() end,
     }, function()
+      vim.schedule(function()
+        vim.api.nvim_echo({ { 'synced to ' .. dest, 'None' } }, false, {})
+      end)
       run_next(index + 1)
     end)
   end
@@ -180,4 +228,22 @@ vim.api.nvim_create_user_command('RsyncEnable', function()
   vim.api.nvim_echo({ { 'Rsync on save: ENABLED', 'None' } }, false, {})
 end, {})
 
+-- Status helper
+local function stringify_destinations(cmds)
+  if type(cmds[1]) == 'string' then
+    return cmds[#cmds] or 'destination'
+  end
+  local dests = {}
+  for _, c in ipairs(cmds) do
+    dests[#dests + 1] = c[#c] or 'destination'
+  end
+  return table.concat(dests, ', ')
+end
 
+vim.api.nvim_create_user_command('RsyncStatus', function()
+  local enabled = _G.rsync_on_save_enabled and 'ENABLED' or 'DISABLED'
+  local dests = stringify_destinations(_G.rsync_command)
+  vim.api.nvim_echo({
+    { 'Rsync on save: ' .. enabled .. ' | Destinations: ' .. dests, 'None' },
+  }, false, {})
+end, {})
